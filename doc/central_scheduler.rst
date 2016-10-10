@@ -95,3 +95,26 @@ The task history has the following pages:
   a listing of all runs of a given task restricted to runs with param values matching the given data.
   The data is a json blob describing the parameters,
   e.g. ``{"foo": "bar"}`` looks for a task with ``foo=bar``.
+
+Enabling Prometheus Client
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+[Prometheus](https://prometheus.io/) is a real-time monitoring system.
+You can enable a Prometheus client for Luigi, which will provide the latest
+status for each task family.
+
+To enable Prometheus metrics,
+specify ``enable_prometheus_metrics = True`` in the
+``[scheduler]`` section of ``luigi.cfg``.
+You can also specify ``prometheus_port`` to override the default.
+
+If enabled, a [Prometheus client server](https://github.com/prometheus/client_python)
+will start on the specified port.
+
+Example configuration
+
+.. code:: ini
+
+    [scheduler]
+    enable_prometheus_metrics= True
+    prometheus_port= 9091

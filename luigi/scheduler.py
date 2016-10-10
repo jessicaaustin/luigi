@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import time
+from prometheus_client import Gauge, start_http_server
 
 from luigi import six
 
@@ -141,6 +142,9 @@ class scheduler(Config):
     record_task_history = parameter.BoolParameter(default=False)
 
     prune_on_get_work = parameter.BoolParameter(default=False)
+
+    enable_prometheus_metrics = parameter.BoolParameter(default=False)
+    prometheus_port = parameter.IntParameter(default=9091)
 
     def _get_retry_policy(self):
         return RetryPolicy(self.retry_count, self.disable_hard_timeout, self.disable_window)
@@ -328,9 +332,12 @@ class Task(object):
         return False
 
     @property
+    def param_str(self):
+        return ', '.join('{}={}'.format(key, value) for key, value in self.params.items())
+
+    @property
     def pretty_id(self):
-        param_str = ', '.join('{}={}'.format(key, value) for key, value in self.params.items())
-        return '{}({})'.format(self.family, param_str)
+        return '{}({})'.format(self.family, self.param_str)
 
 
 class Worker(object):
@@ -669,6 +676,11 @@ class Scheduler(object):
         self._resources = resources or configuration.get_config().getintdict('resources')  # TODO: Can we make this a Parameter?
         self._make_task = functools.partial(Task, retry_policy=self._config._get_retry_policy())
         self._worker_requests = {}
+        if self._config.enable_prometheus_metrics:
+            prom_port = self._config.prometheus_port
+            logger.info("Starting Prometheus client server on port {}".format(prom_port))
+            start_http_server(prom_port)
+            self.prom_metrics = {}
 
     def load(self):
         self._state.load()
@@ -828,6 +840,9 @@ class Scheduler(object):
             task.workers.add(worker_id)
             self._state.get_worker(worker_id).tasks.add(task)
             task.runnable = runnable
+
+        if self._config.enable_prometheus_metrics:
+            self._push_prometheus_metric(task)
 
     @rpc_method()
     def add_worker(self, worker, info, **kwargs):
@@ -1392,3 +1407,30 @@ class Scheduler(object):
     def task_history(self):
         # Used by server.py to expose the calls
         return self._task_history
+
+    @staticmethod
+    def task_label(task):
+        task_name = re.sub(r'[^a-zA-Z0-9_:]', '', task.family)
+        return 'luigi_task_{}'.format(task_name)
+
+    def _push_prometheus_metric(self, task):
+        task_label = self.task_label(task)
+        is_new_metric = False
+        try:
+            metric = self.prom_metrics[task_label]
+        except KeyError:
+            is_new_metric = True
+            metric = {
+                'gauge': Gauge(task_label, 'Luigi task status', ['task_id', 'params', 'status']),
+                'labels': ()
+            }
+            self.prom_metrics[task_label] = metric
+
+        gauge = metric['gauge']
+
+        if not is_new_metric:
+            # remove old metric, to keep client from getting bogged down with outdated info
+            gauge.remove(*(metric['labels']))
+
+        metric['labels'] = (task.id, task.param_str, task.status)
+        gauge.labels(*(metric['labels'])).set_to_current_time()
